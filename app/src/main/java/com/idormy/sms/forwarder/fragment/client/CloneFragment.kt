@@ -1,8 +1,8 @@
 package com.idormy.sms.forwarder.fragment.client
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.os.Environment
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -13,13 +13,21 @@ import com.google.gson.reflect.TypeToken
 import com.hjq.permissions.OnPermissionCallback
 import com.hjq.permissions.Permission
 import com.hjq.permissions.XXPermissions
+import com.idormy.sms.forwarder.App
 import com.idormy.sms.forwarder.R
+import com.idormy.sms.forwarder.activity.MainActivity
 import com.idormy.sms.forwarder.core.BaseFragment
 import com.idormy.sms.forwarder.databinding.FragmentClientCloneBinding
 import com.idormy.sms.forwarder.entity.CloneInfo
 import com.idormy.sms.forwarder.server.model.BaseResponse
+import com.idormy.sms.forwarder.utils.AppUtils
+import com.idormy.sms.forwarder.utils.Base64
 import com.idormy.sms.forwarder.utils.CommonUtils
 import com.idormy.sms.forwarder.utils.HttpServerUtils
+import com.idormy.sms.forwarder.utils.KEY_DEFAULT_SELECTION
+import com.idormy.sms.forwarder.utils.Log
+import com.idormy.sms.forwarder.utils.RSACrypt
+import com.idormy.sms.forwarder.utils.SM4Crypt
 import com.idormy.sms.forwarder.utils.SettingUtils
 import com.idormy.sms.forwarder.utils.XToastUtils
 import com.xuexiang.xaop.annotation.SingleClick
@@ -28,28 +36,39 @@ import com.xuexiang.xhttp2.cache.model.CacheMode
 import com.xuexiang.xhttp2.callback.SimpleCallBack
 import com.xuexiang.xhttp2.exception.ApiException
 import com.xuexiang.xpage.annotation.Page
+import com.xuexiang.xrouter.annotation.AutoWired
+import com.xuexiang.xrouter.launcher.XRouter
 import com.xuexiang.xrouter.utils.TextUtils
 import com.xuexiang.xui.utils.CountDownButtonHelper
-import com.xuexiang.xui.utils.ResUtils
 import com.xuexiang.xui.widget.actionbar.TitleBar
-import com.xuexiang.xutil.app.AppUtils
+import com.xuexiang.xui.widget.dialog.materialdialog.DialogAction
+import com.xuexiang.xui.widget.dialog.materialdialog.MaterialDialog
+import com.xuexiang.xutil.data.ConvertTools
 import com.xuexiang.xutil.file.FileIOUtils
 import com.xuexiang.xutil.file.FileUtils
+import com.xuexiang.xutil.resource.ResUtils.getStringArray
 import java.io.File
-import java.util.*
+import java.util.Date
 
-
-@Suppress("PropertyName")
+@Suppress("PrivatePropertyName")
 @Page(name = "一键换新机")
 class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickListener {
 
-    val TAG: String = SmsQueryFragment::class.java.simpleName
+    private val TAG: String = CloneFragment::class.java.simpleName
     private var backupPath: String? = null
     private val backupFile = "SmsForwarder.json"
     private var pushCountDownHelper: CountDownButtonHelper? = null
     private var pullCountDownHelper: CountDownButtonHelper? = null
     private var exportCountDownHelper: CountDownButtonHelper? = null
     private var importCountDownHelper: CountDownButtonHelper? = null
+
+    @JvmField
+    @AutoWired(name = KEY_DEFAULT_SELECTION)
+    var defaultSelection: Int = 0
+
+    override fun initArgs() {
+        XRouter.getInstance().inject(this)
+    }
 
     override fun viewBindingInflate(
         inflater: LayoutInflater,
@@ -71,8 +90,7 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
         // 申请储存权限
         XXPermissions.with(this)
             //.permission(*Permission.Group.STORAGE)
-            .permission(Permission.MANAGE_EXTERNAL_STORAGE)
-            .request(object : OnPermissionCallback {
+            .permission(Permission.MANAGE_EXTERNAL_STORAGE).request(object : OnPermissionCallback {
                 @SuppressLint("SetTextI18n")
                 override fun onGranted(permissions: List<String>, all: Boolean) {
                     backupPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path
@@ -91,7 +109,7 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
                 }
             })
 
-        binding!!.tabBar.setTabTitles(ResUtils.getStringArray(R.array.clone_type_option))
+        binding!!.tabBar.setTabTitles(getStringArray(R.array.clone_type_option))
         binding!!.tabBar.setOnTabClickListener { _, position ->
             //XToastUtils.toast("点击了$title--$position")
             if (position == 1) {
@@ -101,6 +119,12 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
                 binding!!.layoutNetwork.visibility = View.VISIBLE
                 binding!!.layoutOffline.visibility = View.GONE
             }
+        }
+        //通用设置界面跳转时只使用离线模式
+        if (defaultSelection == 1) {
+            binding!!.tabBar.visibility = View.GONE
+            binding!!.layoutNetwork.visibility = View.GONE
+            binding!!.layoutOffline.visibility = View.VISIBLE
         }
 
         //按钮增加倒计时，避免重复点击
@@ -169,6 +193,7 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
                     FileUtils.createFileByDeleteOldFile(file)
                     val cloneInfo = HttpServerUtils.exportSettings()
                     val jsonStr = Gson().toJson(cloneInfo)
+                    Log.d(TAG, "jsonStr = $jsonStr")
                     if (FileIOUtils.writeFileFromString(file, jsonStr)) {
                         XToastUtils.success(getString(R.string.export_succeeded))
                     } else {
@@ -208,7 +233,18 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
                     HttpServerUtils.compareVersion(cloneInfo)
 
                     if (HttpServerUtils.restoreSettings(cloneInfo)) {
-                        XToastUtils.success(getString(R.string.import_succeeded))
+                        MaterialDialog.Builder(requireContext())
+                            .iconRes(R.drawable.icon_api_clone)
+                            .title(R.string.clone)
+                            .content(R.string.import_succeeded)
+                            .cancelable(false)
+                            .positiveText(R.string.confirm)
+                            .onPositive { _: MaterialDialog?, _: DialogAction? ->
+                                val intent = Intent(App.context, MainActivity::class.java)
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                                startActivity(intent)
+                            }
+                            .show()
                     } else {
                         XToastUtils.error(getString(R.string.import_failed))
                     }
@@ -236,44 +272,87 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
         msgMap["timestamp"] = timestamp
         val clientSignKey = HttpServerUtils.clientSignKey
         if (!TextUtils.isEmpty(clientSignKey)) {
-            msgMap["sign"] = HttpServerUtils.calcSign(timestamp.toString(), clientSignKey.toString())
+            msgMap["sign"] = HttpServerUtils.calcSign(timestamp.toString(), clientSignKey)
         }
         msgMap["data"] = HttpServerUtils.exportSettings()
 
-        val requestMsg: String = Gson().toJson(msgMap)
+        var requestMsg: String = Gson().toJson(msgMap)
         Log.i(TAG, "requestMsg:$requestMsg")
 
-        XHttp.post(requestUrl)
-            .upJson(requestMsg)
-            .keepJson(true)
-            .timeOut((SettingUtils.requestTimeout * 1000).toLong()) //超时时间10s
-            .cacheMode(CacheMode.NO_CACHE)
-            //.retryCount(SettingUtils.requestRetryTimes) //超时重试的次数
-            //.retryDelay(SettingUtils.requestDelayTime) //超时重试的延迟时间
-            //.retryIncreaseDelay(SettingUtils.requestDelayTime) //超时重试叠加延时
-            .timeStamp(true)
-            .execute(object : SimpleCallBack<String>() {
+        val postRequest = XHttp.post(requestUrl).keepJson(true).timeOut((SettingUtils.requestTimeout * 1000).toLong()) //超时时间10s
+            .cacheMode(CacheMode.NO_CACHE).timeStamp(true)
 
-                override fun onError(e: ApiException) {
-                    XToastUtils.error(e.displayMessage)
+        when (HttpServerUtils.clientSafetyMeasures) {
+            2 -> {
+                val publicKey = RSACrypt.getPublicKey(HttpServerUtils.clientSignKey)
+                try {
+                    requestMsg = Base64.encode(requestMsg.toByteArray())
+                    requestMsg = RSACrypt.encryptByPublicKey(requestMsg, publicKey)
+                    Log.i(TAG, "requestMsg: $requestMsg")
+                } catch (e: Exception) {
+                    XToastUtils.error(getString(R.string.request_failed) + e.message)
+                    e.printStackTrace()
+                    Log.e(TAG, e.toString())
+                    return
                 }
+                postRequest.upString(requestMsg)
+            }
 
-                override fun onSuccess(response: String) {
-                    Log.i(TAG, response)
-                    try {
-                        val resp: BaseResponse<String> = Gson().fromJson(response, object : TypeToken<BaseResponse<String>>() {}.type)
-                        if (resp.code == 200) {
-                            XToastUtils.success(ResUtils.getString(R.string.request_succeeded))
-                        } else {
-                            XToastUtils.error(ResUtils.getString(R.string.request_failed) + resp.msg)
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        XToastUtils.error(ResUtils.getString(R.string.request_failed) + response)
+            3 -> {
+                try {
+                    val sm4Key = ConvertTools.hexStringToByteArray(HttpServerUtils.clientSignKey)
+                    //requestMsg = Base64.encode(requestMsg.toByteArray())
+                    val encryptCBC = SM4Crypt.encrypt(requestMsg.toByteArray(), sm4Key)
+                    requestMsg = ConvertTools.bytes2HexString(encryptCBC)
+                    Log.i(TAG, "requestMsg: $requestMsg")
+                } catch (e: Exception) {
+                    XToastUtils.error(getString(R.string.request_failed) + e.message)
+                    e.printStackTrace()
+                    Log.e(TAG, e.toString())
+                    return
+                }
+                postRequest.upString(requestMsg)
+            }
+
+            else -> {
+                postRequest.upJson(requestMsg)
+            }
+        }
+
+        postRequest.execute(object : SimpleCallBack<String>() {
+            override fun onError(e: ApiException) {
+                XToastUtils.error(e.displayMessage)
+                pushCountDownHelper?.finish()
+            }
+
+            override fun onSuccess(response: String) {
+                Log.i(TAG, response)
+                try {
+                    var json = response
+                    if (HttpServerUtils.clientSafetyMeasures == 2) {
+                        val publicKey = RSACrypt.getPublicKey(HttpServerUtils.clientSignKey)
+                        json = RSACrypt.decryptByPublicKey(json, publicKey)
+                        json = String(Base64.decode(json))
+                    } else if (HttpServerUtils.clientSafetyMeasures == 3) {
+                        val sm4Key = ConvertTools.hexStringToByteArray(HttpServerUtils.clientSignKey)
+                        val encryptCBC = ConvertTools.hexStringToByteArray(json)
+                        val decryptCBC = SM4Crypt.decrypt(encryptCBC, sm4Key)
+                        json = String(decryptCBC)
                     }
+                    val resp: BaseResponse<String> = Gson().fromJson(json, object : TypeToken<BaseResponse<String>>() {}.type)
+                    if (resp.code == 200) {
+                        XToastUtils.success(getString(R.string.request_succeeded))
+                    } else {
+                        XToastUtils.error(getString(R.string.request_failed) + resp.msg)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    Log.e(TAG, e.toString())
+                    XToastUtils.error(getString(R.string.request_failed) + response)
                 }
-
-            })
+                pushCountDownHelper?.finish()
+            }
+        })
 
     }
 
@@ -283,7 +362,7 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
             XToastUtils.error(getString(R.string.invalid_service_address))
             return
         }
-        
+
         exportCountDownHelper?.start()
 
         val requestUrl: String = HttpServerUtils.serverAddress + "/clone/pull"
@@ -294,64 +373,108 @@ class CloneFragment : BaseFragment<FragmentClientCloneBinding?>(), View.OnClickL
         msgMap["timestamp"] = timestamp
         val clientSignKey = HttpServerUtils.clientSignKey
         if (!TextUtils.isEmpty(clientSignKey)) {
-            msgMap["sign"] = HttpServerUtils.calcSign(timestamp.toString(), clientSignKey.toString())
+            msgMap["sign"] = HttpServerUtils.calcSign(timestamp.toString(), clientSignKey)
         }
 
         val dataMap: MutableMap<String, Any> = mutableMapOf()
         dataMap["version_code"] = AppUtils.getAppVersionCode()
         msgMap["data"] = dataMap
 
-        val requestMsg: String = Gson().toJson(msgMap)
+        var requestMsg: String = Gson().toJson(msgMap)
         Log.i(TAG, "requestMsg:$requestMsg")
 
-        XHttp.post(requestUrl)
-            .upJson(requestMsg)
-            .keepJson(true)
-            .timeOut((SettingUtils.requestTimeout * 1000).toLong()) //超时时间10s
-            .cacheMode(CacheMode.NO_CACHE)
-            //.retryCount(SettingUtils.requestRetryTimes) //超时重试的次数
-            //.retryDelay(SettingUtils.requestDelayTime) //超时重试的延迟时间
-            //.retryIncreaseDelay(SettingUtils.requestDelayTime) //超时重试叠加延时
-            .timeStamp(true)
-            .execute(object : SimpleCallBack<String>() {
+        val postRequest = XHttp.post(requestUrl).keepJson(true).timeStamp(true)
 
-                override fun onError(e: ApiException) {
-                    XToastUtils.error(e.displayMessage)
+        when (HttpServerUtils.clientSafetyMeasures) {
+            2 -> {
+                val publicKey = RSACrypt.getPublicKey(HttpServerUtils.clientSignKey)
+                try {
+                    requestMsg = Base64.encode(requestMsg.toByteArray())
+                    requestMsg = RSACrypt.encryptByPublicKey(requestMsg, publicKey)
+                    Log.i(TAG, "requestMsg: $requestMsg")
+                } catch (e: Exception) {
+                    XToastUtils.error(getString(R.string.request_failed) + e.message)
+                    e.printStackTrace()
+                    Log.e(TAG, e.toString())
+                    return
                 }
+                postRequest.upString(requestMsg)
+            }
 
-                override fun onSuccess(response: String) {
-                    Log.i(TAG, response)
-                    try {
-                        //替换Date字段为当前时间
-                        val builder = GsonBuilder()
-                        builder.registerTypeAdapter(Date::class.java, JsonDeserializer<Any?> { _, _, _ -> Date() })
-                        val gson = builder.create()
-                        val resp: BaseResponse<CloneInfo> = gson.fromJson(response, object : TypeToken<BaseResponse<CloneInfo>>() {}.type)
-                        if (resp.code == 200) {
-                            val cloneInfo = resp.data
-                            Log.d(TAG, "cloneInfo = $cloneInfo")
+            3 -> {
+                try {
+                    val sm4Key = ConvertTools.hexStringToByteArray(HttpServerUtils.clientSignKey)
+                    //requestMsg = Base64.encode(requestMsg.toByteArray())
+                    val encryptCBC = SM4Crypt.encrypt(requestMsg.toByteArray(), sm4Key)
+                    requestMsg = ConvertTools.bytes2HexString(encryptCBC)
+                    Log.i(TAG, "requestMsg: $requestMsg")
+                } catch (e: Exception) {
+                    XToastUtils.error(getString(R.string.request_failed) + e.message)
+                    e.printStackTrace()
+                    Log.e(TAG, e.toString())
+                    return
+                }
+                postRequest.upString(requestMsg)
+            }
 
-                            if (cloneInfo == null) {
-                                XToastUtils.error(ResUtils.getString(R.string.request_failed) + cloneInfo)
-                                return
-                            }
+            else -> {
+                postRequest.upJson(requestMsg)
+            }
+        }
 
-                            //判断版本是否一致
-                            HttpServerUtils.compareVersion(cloneInfo)
+        postRequest.execute(object : SimpleCallBack<String>() {
+            override fun onError(e: ApiException) {
+                XToastUtils.error(e.displayMessage)
+                exportCountDownHelper?.finish()
+            }
 
-                            if (HttpServerUtils.restoreSettings(cloneInfo)) {
-                                XToastUtils.success(getString(R.string.import_succeeded))
-                            }
-                        } else {
-                            XToastUtils.error(ResUtils.getString(R.string.request_failed) + resp.msg)
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        XToastUtils.error(ResUtils.getString(R.string.request_failed) + response)
+            override fun onSuccess(response: String) {
+                Log.i(TAG, response)
+                try {
+                    var json = response
+                    if (HttpServerUtils.clientSafetyMeasures == 2) {
+                        val publicKey = RSACrypt.getPublicKey(HttpServerUtils.clientSignKey)
+                        json = RSACrypt.decryptByPublicKey(json, publicKey)
+                        json = String(Base64.decode(json))
+                    } else if (HttpServerUtils.clientSafetyMeasures == 3) {
+                        val sm4Key = ConvertTools.hexStringToByteArray(HttpServerUtils.clientSignKey)
+                        val encryptCBC = ConvertTools.hexStringToByteArray(json)
+                        val decryptCBC = SM4Crypt.decrypt(encryptCBC, sm4Key)
+                        json = String(decryptCBC)
                     }
-                }
 
-            })
+                    //替换Date字段为当前时间
+                    val builder = GsonBuilder()
+                    builder.registerTypeAdapter(Date::class.java, JsonDeserializer<Any?> { _, _, _ -> Date() })
+                    val gson = builder.create()
+                    val resp: BaseResponse<CloneInfo> = gson.fromJson(json, object : TypeToken<BaseResponse<CloneInfo>>() {}.type)
+                    if (resp.code == 200) {
+                        val cloneInfo = resp.data
+                        Log.d(TAG, "cloneInfo = $cloneInfo")
+
+                        if (cloneInfo == null) {
+                            XToastUtils.error(getString(R.string.request_failed))
+                            return
+                        }
+
+                        //判断版本是否一致
+                        HttpServerUtils.compareVersion(cloneInfo)
+
+                        if (HttpServerUtils.restoreSettings(cloneInfo)) {
+                            XToastUtils.success(getString(R.string.import_succeeded))
+                        }
+                    } else {
+                        XToastUtils.error(getString(R.string.request_failed) + resp.msg)
+                    }
+
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    Log.e(TAG, e.toString())
+                    XToastUtils.error(getString(R.string.request_failed) + response)
+                }
+                exportCountDownHelper?.finish()
+            }
+        })
 
     }
 

@@ -1,6 +1,5 @@
 package com.idormy.sms.forwarder.fragment.client
 
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -10,27 +9,31 @@ import com.idormy.sms.forwarder.R
 import com.idormy.sms.forwarder.core.BaseFragment
 import com.idormy.sms.forwarder.databinding.FragmentClientWolSendBinding
 import com.idormy.sms.forwarder.server.model.BaseResponse
+import com.idormy.sms.forwarder.utils.Base64
 import com.idormy.sms.forwarder.utils.HttpServerUtils
+import com.idormy.sms.forwarder.utils.Log
+import com.idormy.sms.forwarder.utils.RSACrypt
+import com.idormy.sms.forwarder.utils.SM4Crypt
 import com.idormy.sms.forwarder.utils.SettingUtils
 import com.idormy.sms.forwarder.utils.XToastUtils
 import com.xuexiang.xaop.annotation.SingleClick
 import com.xuexiang.xhttp2.XHttp
-import com.xuexiang.xhttp2.cache.model.CacheMode
 import com.xuexiang.xhttp2.callback.SimpleCallBack
 import com.xuexiang.xhttp2.exception.ApiException
 import com.xuexiang.xpage.annotation.Page
 import com.xuexiang.xrouter.utils.TextUtils
 import com.xuexiang.xui.utils.CountDownButtonHelper
-import com.xuexiang.xui.utils.ResUtils
 import com.xuexiang.xui.widget.actionbar.TitleBar
 import com.xuexiang.xui.widget.dialog.materialdialog.DialogAction
 import com.xuexiang.xui.widget.dialog.materialdialog.MaterialDialog
+import com.xuexiang.xutil.data.ConvertTools
+import com.xuexiang.xutil.resource.ResUtils.getColors
 
-@Suppress("PropertyName")
+@Suppress("PrivatePropertyName")
 @Page(name = "远程WOL")
 class WolSendFragment : BaseFragment<FragmentClientWolSendBinding?>(), View.OnClickListener {
 
-    val TAG: String = WolSendFragment::class.java.simpleName
+    private val TAG: String = WolSendFragment::class.java.simpleName
     private var mCountDownHelper: CountDownButtonHelper? = null
     private var wolHistory: MutableMap<String, String> = mutableMapOf()
 
@@ -51,7 +54,8 @@ class WolSendFragment : BaseFragment<FragmentClientWolSendBinding?>(), View.OnCl
     override fun initViews() {
         //发送按钮增加倒计时，避免重复点击
         mCountDownHelper = CountDownButtonHelper(binding!!.btnSubmit, SettingUtils.requestTimeout)
-        mCountDownHelper!!.setOnCountDownListener(object : CountDownButtonHelper.OnCountDownListener {
+        mCountDownHelper!!.setOnCountDownListener(object :
+            CountDownButtonHelper.OnCountDownListener {
             override fun onCountDown(time: Int) {
                 binding!!.btnSubmit.text = String.format(getString(R.string.seconds_n), time)
             }
@@ -64,7 +68,8 @@ class WolSendFragment : BaseFragment<FragmentClientWolSendBinding?>(), View.OnCl
         //取出历史记录
         val history = HttpServerUtils.wolHistory
         if (!TextUtils.isEmpty(history)) {
-            wolHistory = Gson().fromJson(history, object : TypeToken<MutableMap<String, String>>() {}.type)
+            wolHistory =
+                Gson().fromJson(history, object : TypeToken<MutableMap<String, String>>() {}.type)
         }
     }
 
@@ -83,7 +88,7 @@ class WolSendFragment : BaseFragment<FragmentClientWolSendBinding?>(), View.OnCl
                 }
                 Log.d(TAG, "wolHistory = $wolHistory")
 
-                MaterialDialog.Builder(context!!)
+                MaterialDialog.Builder(requireContext())
                     .title(R.string.server_history)
                     .items(wolHistory.keys)
                     .itemsCallbackSingleChoice(0) { _: MaterialDialog?, _: View?, _: Int, text: CharSequence ->
@@ -95,13 +100,14 @@ class WolSendFragment : BaseFragment<FragmentClientWolSendBinding?>(), View.OnCl
                     .positiveText(R.string.select)
                     .negativeText(R.string.cancel)
                     .neutralText(R.string.clear_history)
-                    .neutralColor(ResUtils.getColors(R.color.red))
+                    .neutralColor(getColors(R.color.red))
                     .onNeutral { _: MaterialDialog?, _: DialogAction? ->
                         wolHistory.clear()
                         HttpServerUtils.wolHistory = ""
                     }
                     .show()
             }
+
             R.id.btn_submit -> {
                 val requestUrl: String = HttpServerUtils.serverAddress + "/wol/send"
                 Log.i(TAG, "requestUrl:$requestUrl")
@@ -111,27 +117,28 @@ class WolSendFragment : BaseFragment<FragmentClientWolSendBinding?>(), View.OnCl
                 msgMap["timestamp"] = timestamp
                 val clientSignKey = HttpServerUtils.clientSignKey
                 if (!TextUtils.isEmpty(clientSignKey)) {
-                    msgMap["sign"] = HttpServerUtils.calcSign(timestamp.toString(), clientSignKey.toString())
+                    msgMap["sign"] =
+                        HttpServerUtils.calcSign(timestamp.toString(), clientSignKey)
                 }
 
                 val mac = binding!!.etMac.text.toString()
                 val macRegex = getString(R.string.mac_regex).toRegex()
                 if (!macRegex.matches(mac)) {
-                    XToastUtils.error(ResUtils.getString(R.string.mac_error))
+                    XToastUtils.error(getString(R.string.mac_error))
                     return
                 }
 
                 val ip = binding!!.etIp.text.toString()
                 val ipRegex = getString(R.string.ip_regex).toRegex()
                 if (!TextUtils.isEmpty(ip) && !ipRegex.matches(ip)) {
-                    XToastUtils.error(ResUtils.getString(R.string.ip_error))
+                    XToastUtils.error(getString(R.string.ip_error))
                     return
                 }
 
                 val port = binding!!.etPort.text.toString()
                 val portRegex = getString(R.string.wol_port_regex).toRegex()
                 if (!TextUtils.isEmpty(port) && !portRegex.matches(port)) {
-                    XToastUtils.error(ResUtils.getString(R.string.wol_port_error))
+                    XToastUtils.error(getString(R.string.wol_port_error))
                     return
                 }
 
@@ -141,42 +148,88 @@ class WolSendFragment : BaseFragment<FragmentClientWolSendBinding?>(), View.OnCl
                 dataMap["port"] = port
                 msgMap["data"] = dataMap
 
-                val requestMsg: String = Gson().toJson(msgMap)
+                var requestMsg: String = Gson().toJson(msgMap)
                 Log.i(TAG, "requestMsg:$requestMsg")
 
+                val postRequest = XHttp.post(requestUrl).keepJson(true).timeStamp(true)
+
+                when (HttpServerUtils.clientSafetyMeasures) {
+                    2 -> {
+                        val publicKey = RSACrypt.getPublicKey(HttpServerUtils.clientSignKey)
+                        try {
+                            requestMsg = Base64.encode(requestMsg.toByteArray())
+                            requestMsg = RSACrypt.encryptByPublicKey(requestMsg, publicKey)
+                            Log.i(TAG, "requestMsg: $requestMsg")
+                        } catch (e: Exception) {
+                            XToastUtils.error(getString(R.string.request_failed) + e.message)
+                            e.printStackTrace()
+                            Log.e(TAG, e.toString())
+                            return
+                        }
+                        postRequest.upString(requestMsg)
+                    }
+
+                    3 -> {
+                        try {
+                            val sm4Key = ConvertTools.hexStringToByteArray(HttpServerUtils.clientSignKey)
+                            //requestMsg = Base64.encode(requestMsg.toByteArray())
+                            val encryptCBC = SM4Crypt.encrypt(requestMsg.toByteArray(), sm4Key)
+                            requestMsg = ConvertTools.bytes2HexString(encryptCBC)
+                            Log.i(TAG, "requestMsg: $requestMsg")
+                        } catch (e: Exception) {
+                            XToastUtils.error(getString(R.string.request_failed) + e.message)
+                            e.printStackTrace()
+                            Log.e(TAG, e.toString())
+                            return
+                        }
+                        postRequest.upString(requestMsg)
+                    }
+
+                    else -> {
+                        postRequest.upJson(requestMsg)
+                    }
+                }
+
                 mCountDownHelper?.start()
-                XHttp.post(requestUrl)
-                    .upJson(requestMsg)
-                    .keepJson(true)
-                    .timeOut((SettingUtils.requestTimeout * 1000).toLong()) //超时时间10s
-                    .cacheMode(CacheMode.NO_CACHE)
-                    .timeStamp(true)
-                    .execute(object : SimpleCallBack<String>() {
+                postRequest.execute(object : SimpleCallBack<String>() {
+                    override fun onError(e: ApiException) {
+                        XToastUtils.error(e.displayMessage)
+                        mCountDownHelper?.finish()
+                    }
 
-                        override fun onError(e: ApiException) {
-                            XToastUtils.error(e.displayMessage)
-                        }
-
-                        override fun onSuccess(response: String) {
-                            Log.i(TAG, response)
-                            try {
-                                val resp: BaseResponse<String> = Gson().fromJson(response, object : TypeToken<BaseResponse<String>>() {}.type)
-                                if (resp.code == 200) {
-                                    XToastUtils.success(ResUtils.getString(R.string.request_succeeded))
-                                    //添加到历史记录
-                                    wolHistory[mac] = ip
-                                    HttpServerUtils.wolHistory = Gson().toJson(wolHistory)
-                                } else {
-                                    XToastUtils.error(ResUtils.getString(R.string.request_failed) + resp.msg)
-                                }
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                XToastUtils.error(ResUtils.getString(R.string.request_failed) + response)
+                    override fun onSuccess(response: String) {
+                        Log.i(TAG, response)
+                        try {
+                            var json = response
+                            if (HttpServerUtils.clientSafetyMeasures == 2) {
+                                val publicKey = RSACrypt.getPublicKey(HttpServerUtils.clientSignKey)
+                                json = RSACrypt.decryptByPublicKey(json, publicKey)
+                                json = String(Base64.decode(json))
+                            } else if (HttpServerUtils.clientSafetyMeasures == 3) {
+                                val sm4Key = ConvertTools.hexStringToByteArray(HttpServerUtils.clientSignKey)
+                                val encryptCBC = ConvertTools.hexStringToByteArray(json)
+                                val decryptCBC = SM4Crypt.decrypt(encryptCBC, sm4Key)
+                                json = String(decryptCBC)
                             }
+                            val resp: BaseResponse<String> = Gson().fromJson(json, object : TypeToken<BaseResponse<String>>() {}.type)
+                            if (resp.code == 200) {
+                                XToastUtils.success(getString(R.string.request_succeeded))
+                                //添加到历史记录
+                                wolHistory[mac] = ip
+                                HttpServerUtils.wolHistory = Gson().toJson(wolHistory)
+                            } else {
+                                XToastUtils.error(getString(R.string.request_failed) + resp.msg)
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            Log.e(TAG, e.toString())
+                            XToastUtils.error(getString(R.string.request_failed) + response)
                         }
-
-                    })
+                        mCountDownHelper?.finish()
+                    }
+                })
             }
+
             else -> {}
         }
     }
